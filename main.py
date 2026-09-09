@@ -9,13 +9,14 @@ from docx import Document
 
 app = FastAPI()
 
-# Mở kết nối CORS cho Blogger
+# Cấu hình CORS mở rộng cho tất cả tên miền bao gồm Blogger
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
 def ocr_page(args):
@@ -25,7 +26,7 @@ def ocr_page(args):
 
 @app.get("/")
 def read_root():
-    return {"status": "Server OCR đang hoạt động mượt mà!"}
+    return {"status": "ok"}
 
 @app.post("/convert")
 async def convert_pdf(file: UploadFile = File(...)):
@@ -33,18 +34,18 @@ async def convert_pdf(file: UploadFile = File(...)):
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
-    # Chuyển PDF sang ảnh với DPI 150 để xử lý cực nhanh
+    # Chuyển PDF sang ảnh DPI 150
     images = convert_from_path(pdf_path, dpi=150)
     
     tasks = [(i, img) for i, img in enumerate(images)]
     results = [None] * len(images)
 
-    # Chạy đa luồng OCR
+    # Đa luồng xử lý OCR
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         for page_num, text in executor.map(ocr_page, tasks):
             results[page_num] = text
 
-    # Tạo file Word
+    # Xuất ra file Word
     doc = Document()
     for page_text in results:
         if page_text:
@@ -56,7 +57,6 @@ async def convert_pdf(file: UploadFile = File(...)):
     out_path = f"converted_{file.filename}.docx"
     doc.save(out_path)
 
-    # Dọn dẹp file PDF tạm
     if os.path.exists(pdf_path):
         os.remove(pdf_path)
 
