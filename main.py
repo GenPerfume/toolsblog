@@ -3,7 +3,8 @@ import gc
 import uuid
 import glob
 import subprocess
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pypdf import PdfReader
@@ -19,6 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+executor = ThreadPoolExecutor(max_workers=2)
 tasks = {}
 
 def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
@@ -32,21 +34,20 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
         for page_num in range(1, total_pages + 1):
             img_prefix = f"img_{task_id}_p{page_num}"
             
-            # Tách đúng 1 trang PDF thành ảnh PNG
+            # Tách 1 trang PDF thành ảnh PNG bằng pdftoppm
             subprocess.run([
                 "pdftoppm", "-png", "-r", "120",
                 "-f", str(page_num), "-l", str(page_num),
                 pdf_path, img_prefix
             ], check=True)
 
-            # Lấy chính xác file ảnh vừa sinh ra
             generated_files = glob.glob(f"{img_prefix}*.png")
 
             if generated_files:
                 img_file = generated_files[0]
                 txt_output_prefix = f"txt_{task_id}_p{page_num}"
 
-                # Chạy Tesseract nhận diện tiếng Việt
+                # Nhận diện chữ Tiếng Việt bằng Tesseract CLI
                 subprocess.run([
                     "tesseract", img_file, txt_output_prefix,
                     "-l", "vie"
@@ -62,7 +63,6 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
                                     doc.add_paragraph(line.strip())
                     os.remove(txt_file)
 
-                # Xóa file ảnh tạm
                 if os.path.exists(img_file):
                     os.remove(img_file)
 
@@ -91,14 +91,15 @@ def read_root():
     return {"status": "ok"}
 
 @app.post("/convert")
-async def convert_pdf(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+async def convert_pdf(file: UploadFile = File(...)):
     task_id = str(uuid.uuid4())
     pdf_path = f"temp_{task_id}.pdf"
     
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
-    background_tasks.add_task(process_pdf_task, task_id, pdf_path, file.filename)
+    # Đưa tác vụ nặng vào ThreadPoolPool riêng biệt
+    executor.submit(process_pdf_task, task_id, pdf_path, file.filename)
     return {"task_id": task_id}
 
 @app.get("/status/{task_id}")
