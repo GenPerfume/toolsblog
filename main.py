@@ -3,7 +3,7 @@ import gc
 import uuid
 import glob
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -20,7 +20,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-executor = ThreadPoolExecutor(max_workers=2)
 tasks = {}
 
 def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
@@ -34,9 +33,9 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
         for page_num in range(1, total_pages + 1):
             img_prefix = f"img_{task_id}_p{page_num}"
             
-            # Tách 1 trang PDF thành ảnh PNG bằng pdftoppm
+            # Xuất ảnh 100 DPI để tránh tràn RAM 512MB của Render Free
             subprocess.run([
-                "pdftoppm", "-png", "-r", "120",
+                "pdftoppm", "-png", "-r", "100",
                 "-f", str(page_num), "-l", str(page_num),
                 pdf_path, img_prefix
             ], check=True)
@@ -47,7 +46,7 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
                 img_file = generated_files[0]
                 txt_output_prefix = f"txt_{task_id}_p{page_num}"
 
-                # Nhận diện chữ Tiếng Việt bằng Tesseract CLI
+                # OCR Tiếng Việt
                 subprocess.run([
                     "tesseract", img_file, txt_output_prefix,
                     "-l", "vie"
@@ -63,6 +62,7 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
                                     doc.add_paragraph(line.strip())
                     os.remove(txt_file)
 
+                # Dọn dẹp file ảnh đệm ngay lập tức
                 if os.path.exists(img_file):
                     os.remove(img_file)
 
@@ -71,6 +71,8 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
 
             tasks[task_id]["current"] = page_num
             tasks[task_id]["progress"] = int((page_num / total_pages) * 100)
+            
+            # Ép dọn bộ nhớ sau từng trang
             gc.collect()
 
         out_path = f"converted_{task_id}.docx"
@@ -98,8 +100,11 @@ async def convert_pdf(file: UploadFile = File(...)):
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
-    # Đưa tác vụ nặng vào ThreadPoolPool riêng biệt
-    executor.submit(process_pdf_task, task_id, pdf_path, file.filename)
+    # Dùng threading.Thread thuần để tránh tốn RAM hệ thống
+    thread = threading.Thread(target=process_pdf_task, args=(task_id, pdf_path, file.filename))
+    thread.daemon = True
+    thread.start()
+
     return {"task_id": task_id}
 
 @app.get("/status/{task_id}")
