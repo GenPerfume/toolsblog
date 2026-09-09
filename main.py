@@ -3,7 +3,8 @@ import gc
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pdf2image import convert_from_path, pdfinfo_from_path
+from pdf2image import convert_from_path
+from pypdf import PdfReader
 import pytesseract
 from docx import Document
 import uvicorn
@@ -31,11 +32,11 @@ async def convert_pdf(file: UploadFile = File(...)):
     doc = Document()
 
     try:
-        # Lấy tổng số trang mà không load toàn bộ PDF vào RAM
-        info = pdfinfo_from_path(pdf_path)
-        total_pages = info["Pages"]
+        # Lấy số trang bằng pypdf cực nhẹ, không gây crash RAM
+        reader = PdfReader(pdf_path)
+        total_pages = len(reader.pages)
 
-        # Duyệt từng trang một để tiết kiệm RAM tối đa cho gói Free
+        # Chạy từng trang một và dọn dẹp RAM liên tục
         for page_num in range(1, total_pages + 1):
             images = convert_from_path(
                 pdf_path, 
@@ -54,7 +55,6 @@ async def convert_pdf(file: UploadFile = File(...)):
                 if page_num < total_pages:
                     doc.add_page_break()
                 
-                # Giải phóng bộ nhớ RAM ngay lập tức
                 del images
                 gc.collect()
 
@@ -73,4 +73,4 @@ async def convert_pdf(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port)
