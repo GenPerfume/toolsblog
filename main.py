@@ -6,17 +6,16 @@ from fastapi.responses import FileResponse
 from pdf2image import convert_from_path
 import pytesseract
 from docx import Document
+import uvicorn
 
 app = FastAPI()
 
-# Cấu hình CORS mở rộng cho tất cả tên miền bao gồm Blogger
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"]
 )
 
 def ocr_page(args):
@@ -34,18 +33,14 @@ async def convert_pdf(file: UploadFile = File(...)):
     with open(pdf_path, "wb") as f:
         f.write(await file.read())
 
-    # Chuyển PDF sang ảnh DPI 150
     images = convert_from_path(pdf_path, dpi=150)
-    
     tasks = [(i, img) for i, img in enumerate(images)]
     results = [None] * len(images)
 
-    # Đa luồng xử lý OCR
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         for page_num, text in executor.map(ocr_page, tasks):
             results[page_num] = text
 
-    # Xuất ra file Word
     doc = Document()
     for page_text in results:
         if page_text:
@@ -61,3 +56,7 @@ async def convert_pdf(file: UploadFile = File(...)):
         os.remove(pdf_path)
 
     return FileResponse(out_path, filename=f"{file.filename.replace('.pdf', '')}_OCR.docx")
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
