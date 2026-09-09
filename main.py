@@ -1,15 +1,12 @@
 import os
 import gc
 import uuid
-import threading
+import subprocess
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pdf2image import convert_from_path
 from pypdf import PdfReader
-import pytesseract
 from docx import Document
-import uvicorn
 
 app = FastAPI()
 
@@ -21,7 +18,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Lưu trữ trạng thái tiến trình các file
 tasks = {}
 
 def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
@@ -33,20 +29,49 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
         doc = Document()
 
         for page_num in range(1, total_pages + 1):
-            images = convert_from_path(pdf_path, dpi=120, first_page=page_num, last_page=page_num)
-            if images:
-                text = pytesseract.image_to_string(images[0], lang='vie')
-                if text.strip():
-                    for line in text.split('\n'):
-                        if line.strip():
-                            doc.add_paragraph(line.strip())
-                if page_num < total_pages:
-                    doc.add_page_break()
-                del images
-                gc.collect()
+            img_prefix = f"temp_{task_id}_p{page_num}"
+            
+            # Tách trang PDF thành ảnh PNG bằng pdftoppm
+            subprocess.run([
+                "pdftoppm", "-png", "-r", "120",
+                "-f", str(page_num), "-l", str(page_num),
+                pdf_path, img_prefix
+            ], check=True)
+
+            # Tìm file ảnh vừa được tạo ra
+            img_file = None
+            for fname in os.listdir("."):
+                if fname.startswith(img_prefix) and fname.endswith(".png"):
+                    img_file = fname
+                    break
+
+            txt_output_prefix = f"txt_{task_id}_p{page_num}"
+
+            if img_file and os.path.exists(img_file):
+                # Chạy Tesseract CLI trực tiếp
+                subprocess.run([
+                    "tesseract", img_file, txt_output_prefix,
+                    "-l", "vie"
+                ], check=True)
+
+                txt_file = f"{txt_output_prefix}.txt"
+                if os.path.exists(txt_file):
+                    with open(txt_file, "r", encoding="utf-8") as f:
+                        text = f.read()
+                        if text.strip():
+                            for line in text.split('\n'):
+                                if line.strip():
+                                    doc.add_paragraph(line.strip())
+                    os.remove(txt_file)
+
+                os.remove(img_file)
+
+            if page_num < total_pages:
+                doc.add_page_break()
 
             tasks[task_id]["current"] = page_num
             tasks[task_id]["progress"] = int((page_num / total_pages) * 100)
+            gc.collect()
 
         out_path = f"converted_{task_id}.docx"
         doc.save(out_path)
@@ -86,7 +111,3 @@ def download_file(task_id: str):
     if task and task.get("status") == "completed":
         return FileResponse(task["file_path"], filename=task["out_filename"])
     return JSONResponse(status_code=404, content={"message": "File chưa sẵn sàng"})
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
