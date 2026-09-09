@@ -1,6 +1,7 @@
 import os
 import gc
 import uuid
+import glob
 import subprocess
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,26 +30,23 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
         doc = Document()
 
         for page_num in range(1, total_pages + 1):
-            img_prefix = f"temp_{task_id}_p{page_num}"
+            img_prefix = f"img_{task_id}_p{page_num}"
             
-            # Tách trang PDF thành ảnh PNG bằng pdftoppm
+            # Tách đúng 1 trang PDF thành ảnh PNG
             subprocess.run([
                 "pdftoppm", "-png", "-r", "120",
                 "-f", str(page_num), "-l", str(page_num),
                 pdf_path, img_prefix
             ], check=True)
 
-            # Tìm file ảnh vừa được tạo ra
-            img_file = None
-            for fname in os.listdir("."):
-                if fname.startswith(img_prefix) and fname.endswith(".png"):
-                    img_file = fname
-                    break
+            # Lấy chính xác file ảnh vừa sinh ra
+            generated_files = glob.glob(f"{img_prefix}*.png")
 
-            txt_output_prefix = f"txt_{task_id}_p{page_num}"
+            if generated_files:
+                img_file = generated_files[0]
+                txt_output_prefix = f"txt_{task_id}_p{page_num}"
 
-            if img_file and os.path.exists(img_file):
-                # Chạy Tesseract CLI trực tiếp
+                # Chạy Tesseract nhận diện tiếng Việt
                 subprocess.run([
                     "tesseract", img_file, txt_output_prefix,
                     "-l", "vie"
@@ -64,7 +62,9 @@ def process_pdf_task(task_id: str, pdf_path: str, original_filename: str):
                                     doc.add_paragraph(line.strip())
                     os.remove(txt_file)
 
-                os.remove(img_file)
+                # Xóa file ảnh tạm
+                if os.path.exists(img_file):
+                    os.remove(img_file)
 
             if page_num < total_pages:
                 doc.add_page_break()
